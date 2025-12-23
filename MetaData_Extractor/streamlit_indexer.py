@@ -5,12 +5,15 @@ import json
 import time
 import os
 import re
+from json_repair import repair_json
+from filelock import FileLock
 
 # --- Configuration ---
 API_KEY = ""  # To be filled by user or environment
 MODEL_NAME = "gemini-2.5-flash-preview-09-2025"
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
 GLOBAL_STATS_PATH = "global_stats.json"
+GLOBAL_STATS_LOCK = "global_stats.json.lock"
 
 # --- Helper Functions ---
 
@@ -27,29 +30,8 @@ def clean_json_text(text):
         text = text[start_idx:end_idx+1]
     return text
 
-def repair_json(json_str):
-    """
-    Attempts to repair common JSON errors from LLMs.
-    """
-    # 1. Replace newlines inside strings (simple heuristic)
-    # This is risky but often necessary for multi-line content from LLMs that didn't escape newlines
-    # logic: if we are inside quotes, replace \n with \\n. 
-    # Hard to do perfectly with regex. 
-    # Instead, we will try to rely on more specific fixes for the Reported Error: "Expecting ',' delimiter"
-    
-    # Fix: Unescaped double quotes inside strings. 
-    # A crude but often effective way is tricky without a parser.
-    
-    # Fix: Missing commas between array items or object properties
-    # pattern: " (end of logical value) followed by " (start of next key) without comma
-    # This regex looks for: "value" "key":
-    json_str = re.sub(r'"\s+"\w+":', lambda m: m.group(0).replace(' "', '", "'), json_str)
+# Removed custom repair_json function in favor of json_repair library
 
-    # Fix: Trailing commas
-    # pattern: , } or , ]
-    json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
-    
-    return json_str
 
 def get_book_id(filename):
     """
@@ -61,6 +43,33 @@ def get_book_id(filename):
     # Replace spaces with underscores and convert to lowercase
     book_id = re.sub(r'\s+', '_', name).lower()
     return book_id
+
+def format_debug_text(text):
+    """
+    Attempts to format the JSON text for readability, even if invalid.
+    """
+    try:
+        # If valid, use proper printer
+        data = json.loads(text, strict=False)
+        return json.dumps(data, indent=4, ensure_ascii=False)
+    except:
+        # If invalid, perform "dumb" formatting to reveal structure
+        # 1. Add newlines after opening brackets/braces
+        text = text.replace('{', '{\n').replace('[', '[\n')
+        
+        # 2. Add newlines before closing brackets/braces
+        text = text.replace('}', '\n}').replace(']', '\n]')
+        
+        # 3. Add newlines after commas (unless inside string - naive check, but helpful)
+        text = text.replace(', "', ',\n "') # Most common case: field separator
+        text = text.replace('},', '},\n')   # Object separator
+        text = text.replace('],', '],\n')   # Array separator
+        
+        # 4. Try to break "key": "value" pairs that are squashed (missing comma case)
+        #    e.g. "val" "key": -> "val"\n"key":
+        text = re.sub(r'"\s+"(?=\w+":)', '"\n"', text)
+        
+        return text
 
 def calculate_statistics(data):
     """
@@ -137,28 +146,31 @@ def save_global_stats(stats):
 
 def update_global_stats(new_data):
     """Updates global statistics with data from a newly processed file."""
-    stats = load_global_stats()
+    lock = FileLock(GLOBAL_STATS_LOCK)
     
-    stories = new_data.get('stories', [])
-    stats['total_stories'] = stats.get('total_stories', 0) + len(stories)
-    
-    # Initialize dictionaries if missing
-    if 'authors' not in stats: stats['authors'] = {}
-    if 'genres' not in stats: stats['genres'] = {}
+    with lock:
+        stats = load_global_stats()
+        
+        stories = new_data.get('stories', [])
+        stats['total_stories'] = stats.get('total_stories', 0) + len(stories)
+        
+        # Initialize dictionaries if missing
+        if 'authors' not in stats: stats['authors'] = {}
+        if 'genres' not in stats: stats['genres'] = {}
 
-    for story in stories:
-        # Update Authors
-        author = story.get('author', 'చందమామ బృందం').strip()
-        if author:
-            stats['authors'][author] = stats['authors'].get(author, 0) + 1
-            
-        # Update Genres
-        genre = story.get('genre', 'Unknown').strip()
-        if genre and genre.lower() != 'unknown':
-            stats['genres'][genre] = stats['genres'].get(genre, 0) + 1
-            
-    save_global_stats(stats)
-    return stats
+        for story in stories:
+            # Update Authors
+            author = story.get('author', 'చందమామ బృందం').strip()
+            if author:
+                stats['authors'][author] = stats['authors'].get(author, 0) + 1
+                
+            # Update Genres
+            genre = story.get('genre', 'Unknown').strip()
+            if genre and genre.lower() != 'unknown':
+                stats['genres'][genre] = stats['genres'].get(genre, 0) + 1
+                
+        save_global_stats(stats)
+        return stats
 
 def encode_pdf(file):
     """Encodes the uploaded PDF file to Base64."""
@@ -243,7 +255,13 @@ def get_structured_index(pdf_base64, api_key):
         },
         "generationConfig": {
             "response_mime_type": "application/json"
-        }
+        },
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
     }
 
     params = {
@@ -324,6 +342,7 @@ def render_single_mode():
                     except (KeyError, json.JSONDecodeError) as e:
                         # Attempt Repair
                         try:
+                            # Use json_repair to fix and parse
                             repaired_text = repair_json(content_text)
                             data = json.loads(repaired_text)
                             
@@ -452,6 +471,32 @@ def render_bulk_mode():
                 file_path = os.path.join(input_dir, filename)
                 book_id = get_book_id(filename)
                 
+                # Check if JSON already exists in output_dir
+                json_filename = f"{book_id}.json" # Default naming convention
+                existing_json_path = os.path.join(output_dir, json_filename)
+                
+                # Also check for Year/Month folder structure attempts if default not found (optional, but good for robustness if user organized them)
+                # But for now, let's stick to the flattening or the likely user workflow.
+                # Actually, the tool saves as `book_id.json` in the export step (line 578), so that's what we look for.
+                
+                if os.path.exists(existing_json_path):
+                    try:
+                        with open(existing_json_path, 'r', encoding='utf-8') as f:
+                            existing_data = json.load(f)
+                        
+                        st.session_state['bulk_data'][filename] = {
+                            'status': 'processed',
+                            'data': existing_data,
+                            'verified': True # Assume existing means verified/done
+                        }
+                        status_text.text(f"Skipping {filename} (JSON already exists)...")
+                        progress_bar.progress((i + 1) / len(pdf_files))
+                        time.sleep(0.1) # Brief pause for UI update
+                        continue
+                    except Exception as e:
+                        st.warning(f"Found existing JSON for {filename} but failed to load it: {e}. Reprocessing...")
+
+                content_text_debug = None
                 try:
                     with open(file_path, "rb") as f:
                         pdf_base64 = base64.b64encode(f.read()).decode('utf-8')
@@ -459,31 +504,45 @@ def render_bulk_mode():
                     api_response = get_structured_index(pdf_base64, api_key_input)
                     
                     if api_response:
-                        content_text = api_response['candidates'][0]['content']['parts'][0]['text']
-                        content_text = clean_json_text(content_text)
-                        
                         try:
-                            data = json.loads(content_text)
-                        except json.JSONDecodeError:
-                            # Fallback repair in bulk mode too
-                            content_text = repair_json(content_text)
-                            data = json.loads(content_text)
+                            content_text = api_response['candidates'][0]['content']['parts'][0]['text']
+                            content_text_debug = content_text # Save for debug if needed
+                            content_text = clean_json_text(content_text)
                             
-                        data['book_id'] = book_id
-                        
-                        # Calculate Statistics
-                        data = calculate_statistics(data)
+                            try:
+                                data = json.loads(content_text)
+                            except json.JSONDecodeError:
+                                # Fallback repair using json_repair
+                                content_text = repair_json(content_text)
+                                data = json.loads(content_text)
+                                
+                            data['book_id'] = book_id
+                            
+                            # Calculate Statistics
+                            data = calculate_statistics(data)
 
-                        st.session_state['bulk_data'][filename] = {
-                            'status': 'processed',
-                            'data': data,
-                            'verified': False
-                        }
+                            st.session_state['bulk_data'][filename] = {
+                                'status': 'processed',
+                                'data': data,
+                                'verified': False
+                            }
+                        except (KeyError, IndexError) as ignored:
+                            # Try to extract a useful error message from the response
+                            error_msg = 'API Response valid but content missing.'
+                            if 'candidates' in api_response:
+                                candidates = api_response['candidates']
+                                if candidates and 'finishReason' in candidates[0]:
+                                     error_msg += f" FinishReason: {candidates[0]['finishReason']}"
+                            
+                            if 'promptFeedback' in api_response:
+                                 error_msg += f" PromptFeedback: {api_response['promptFeedback']}"
+
+                            st.session_state['bulk_data'][filename] = {'status': 'error', 'msg': error_msg, 'debug': str(api_response)}
                     else:
-                        st.session_state['bulk_data'][filename] = {'status': 'error', 'msg': 'API Error'}
+                        st.session_state['bulk_data'][filename] = {'status': 'error', 'msg': 'API Error (No Response)'}
                         
                 except Exception as e:
-                    st.session_state['bulk_data'][filename] = {'status': 'error', 'msg': str(e)}
+                    st.session_state['bulk_data'][filename] = {'status': 'error', 'msg': str(e), 'debug': content_text_debug}
                 
                 # Auto-save backup after every file
                 try:
@@ -555,6 +614,9 @@ def render_bulk_mode():
                             
                     elif file_info.get('status') == 'error':
                         st.error(f"Error processing file: {file_info.get('msg')}")
+                        if file_info.get('debug'):
+                            with st.expander("View Raw Debug Content"):
+                                st.code(file_info['debug'])
                     else:
                         st.info("File not processed yet.")
 

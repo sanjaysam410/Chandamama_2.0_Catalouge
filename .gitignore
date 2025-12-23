@@ -1,0 +1,46 @@
+# General
+.DS_Store
+thumbs.db
+*~
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# VS Code
+.vscode/
+
+# Streamlit
+.streamlit/
+
+# Project Specific
+MetaData_Extractor/global_stats.json
+MetaData_Extractor/_bulk_progress_backup.json
+*_progress_backup.json
+*.log
