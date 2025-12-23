@@ -250,7 +250,13 @@ def get_structured_index(pdf_base64, api_key):
         },
         "generationConfig": {
             "response_mime_type": "application/json"
-        }
+        },
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
     }
 
     params = {
@@ -516,7 +522,17 @@ def render_bulk_mode():
                                 'verified': False
                             }
                         except (KeyError, IndexError) as ignored:
-                             st.session_state['bulk_data'][filename] = {'status': 'error', 'msg': 'API Response format invalid', 'debug': str(api_response)}
+                            # Try to extract a useful error message from the response
+                            error_msg = 'API Response valid but content missing.'
+                            if 'candidates' in api_response:
+                                candidates = api_response['candidates']
+                                if candidates and 'finishReason' in candidates[0]:
+                                     error_msg += f" FinishReason: {candidates[0]['finishReason']}"
+                            
+                            if 'promptFeedback' in api_response:
+                                 error_msg += f" PromptFeedback: {api_response['promptFeedback']}"
+
+                            st.session_state['bulk_data'][filename] = {'status': 'error', 'msg': error_msg, 'debug': str(api_response)}
                     else:
                         st.session_state['bulk_data'][filename] = {'status': 'error', 'msg': 'API Error (No Response)'}
                         
