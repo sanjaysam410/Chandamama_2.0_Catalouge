@@ -42,7 +42,11 @@ def repair_json(json_str):
     # Look for: " (end of val) whitespace " (start of key) word characters ":
     json_str = re.sub(r'"\s+"(?=\w+":)', '", "', json_str)
 
-    # 4. Fix: Trailing commas
+    # 4. Fix missing commas after numbers/booleans/null
+    # Pattern: digit or true/false/null whitespace "key":
+    json_str = re.sub(r'(\d+|true|false|null)\s+"(?=\w+":)', r'\1, "', json_str)
+
+    # 5. Fix: Trailing commas
     # pattern: , } or , ]
     json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
     
@@ -58,6 +62,33 @@ def get_book_id(filename):
     # Replace spaces with underscores and convert to lowercase
     book_id = re.sub(r'\s+', '_', name).lower()
     return book_id
+
+def format_debug_text(text):
+    """
+    Attempts to format the JSON text for readability, even if invalid.
+    """
+    try:
+        # If valid, use proper printer
+        data = json.loads(text, strict=False)
+        return json.dumps(data, indent=4, ensure_ascii=False)
+    except:
+        # If invalid, perform "dumb" formatting to reveal structure
+        # 1. Add newlines after opening brackets/braces
+        text = text.replace('{', '{\n').replace('[', '[\n')
+        
+        # 2. Add newlines before closing brackets/braces
+        text = text.replace('}', '\n}').replace(']', '\n]')
+        
+        # 3. Add newlines after commas (unless inside string - naive check, but helpful)
+        text = text.replace(', "', ',\n "') # Most common case: field separator
+        text = text.replace('},', '},\n')   # Object separator
+        text = text.replace('],', '],\n')   # Array separator
+        
+        # 4. Try to break "key": "value" pairs that are squashed (missing comma case)
+        #    e.g. "val" "key": -> "val"\n"key":
+        text = re.sub(r'"\s+"(?=\w+":)', '"\n"', text)
+        
+        return text
 
 def calculate_statistics(data):
     """
