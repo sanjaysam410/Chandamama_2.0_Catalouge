@@ -16,14 +16,16 @@ A Streamlit application to extract structured metadata (stories, authors, page n
 
 2.  **Install Dependencies**:
     ```bash
-    pip install -r MetaData_Extractor/requirements.txt
+    cd MetaData_Extractor
+    pip install -r requirements.txt
     ```
 
 ## How to Run
 
 1.  **Start the App**:
     ```bash
-    streamlit run MetaData_Extractor/streamlit_indexer.py
+    cd MetaData_Extractor
+    streamlit run streamlit_indexer.py
     ```
 
 2.  **Enter API Key**:
